@@ -18,26 +18,24 @@ from aiogram.types import (
     LabeledPrice,
     PreCheckoutQuery,
 )
-from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 
-# Загружаем локальные переменные окружения из файла .env (если он есть)
-load_dotenv()
-
 # ==================== НАСТРОЙКА КЛЮЧЕЙ И ПРОМПТА ====================
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_TOKEN = "6035634793:AAEZtNPmvuJar35GyRP4jOrbcUG123RyFC4"
 PUBLIC_CHANNEL_ID = -1004451722414  # Обычный канал (если нужен для других отчетов)
 PREMIUM_CHANNEL_ID = -1004453114256 # Премиум-канал (где публикуются сигналы и обновляются статусы)
 PROVIDER_TOKEN = ""  # Пусто для Telegram Stars (XTR)
 CHECK_INTERVAL = 3600 # 1 час (в секундах)
 
+# Путь к базе данных (сохраняется на постоянный диск /data)
+DB_PATH = os.getenv("DB_PATH", "/data/bot_users.db")
+
+# БЕЗОПАСНОЕ ЧТЕНИЕ КЛЮЧЕЙ ЧЕРЕЗ ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ (НЕ ВЫЗЫВАЕТ БЛОКИРОВКУ GITHUB)
 GEMINI_KEYS = [
-    os.getenv("GEMINI_KEY_1"),
-    os.getenv("GEMINI_KEY_2"),
-    os.getenv("GEMINI_KEY_3"),
-    os.getenv("GEMINI_KEY_4"),
-    os.getenv("GEMINI_KEY_5"),
+    os.getenv("GCP_API_KEY", "your_api_key_1"),
+    os.getenv("GEMINI_KEY_2", "your_api_key_2"),
+    os.getenv("GEMINI_KEY_3", "your_api_key_3"),
 ]
 
 current_key_index = 0
@@ -268,6 +266,19 @@ async def translate_text_for_user(text: str, user_language_code: str) -> str:
   return text
 
 
+async def get_binance_price(symbol: str) -> float:
+  url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
+  try:
+    async with aiohttp.ClientSession() as session:
+      async with session.get(url, timeout=5) as response:
+        if response.status == 200:
+          data = await response.json()
+          return float(data.get("price", 0))
+  except Exception as e:
+    print(f"Ошибка получения цены Binance для {symbol}: {e}")
+  return 0.0
+
+
 # ==================== РАСЧЕТ ИНДИКАТОРОВ ====================
 async def calculate_market_indicators(symbol: str, interval: str = "1h") -> dict:
   url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit=500"
@@ -312,7 +323,7 @@ async def calculate_market_indicators(symbol: str, interval: str = "1h") -> dict
 
 # ==================== БАЗА ДАННЫХ И МИГРАЦИИ ====================
 def init_db():
-  with sqlite3.connect("bot_users.db", timeout=20) as conn:
+  with sqlite3.connect(DB_PATH, timeout=20) as conn:
     cursor = conn.cursor()
     cursor.execute("""
             CREATE TABLE IF NOT EXISTS users (
@@ -372,7 +383,7 @@ def init_db():
 
 
 def update_and_get_stats(result_type: str):
-  with sqlite3.connect("bot_users.db", timeout=20) as conn:
+  with sqlite3.connect(DB_PATH, timeout=20) as conn:
     cursor = conn.cursor()
     if result_type == "TP":
       cursor.execute("UPDATE channel_stats SET total_tp = total_tp + 1 WHERE id = 1")
@@ -386,7 +397,7 @@ def update_and_get_stats(result_type: str):
 
 
 def get_active_signal(symbol: str, tf_type: str, user_id: int = None):
-  with sqlite3.connect("bot_users.db", timeout=20) as conn:
+  with sqlite3.connect(DB_PATH, timeout=20) as conn:
     cursor = conn.cursor()
     if user_id is not None:
       cursor.execute(
@@ -422,7 +433,7 @@ def save_active_signal(
     channel_message_id: int = None,
     user_id: int = None,
 ):
-  with sqlite3.connect("bot_users.db", timeout=20) as conn:
+  with sqlite3.connect(DB_PATH, timeout=20) as conn:
     cursor = conn.cursor()
     cursor.execute(
         """
@@ -447,7 +458,7 @@ def save_active_signal(
 
 def register_user(user_id: int, username: str, full_name: str, lang: str = "ru", referrer_id: int = None):
   today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-  with sqlite3.connect("bot_users.db", timeout=20) as conn:
+  with sqlite3.connect(DB_PATH, timeout=20) as conn:
     cursor = conn.cursor()
     cursor.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,))
     if not cursor.fetchone():
@@ -461,7 +472,7 @@ def register_user(user_id: int, username: str, full_name: str, lang: str = "ru",
 
 def get_user_status(user_id: int):
   today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-  with sqlite3.connect("bot_users.db", timeout=20) as conn:
+  with sqlite3.connect(DB_PATH, timeout=20) as conn:
     cursor = conn.cursor()
     cursor.execute(
         "SELECT requests_left, daily_used, last_reset_date, sub_expires_at, total_requests FROM users WHERE user_id = ?",
@@ -490,7 +501,7 @@ def get_user_status(user_id: int):
 
 def use_request_and_check_referral(user_id: int, bot: Bot):
   today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-  with sqlite3.connect("bot_users.db", timeout=20) as conn:
+  with sqlite3.connect(DB_PATH, timeout=20) as conn:
     cursor = conn.cursor()
     cursor.execute(
         "SELECT referrer_id, first_request_made FROM users WHERE user_id = ?",
@@ -532,7 +543,7 @@ async def notify_referrer(bot: Bot, referrer_id: int):
 
 
 def activate_subscription(user_id: int, days: int = 0, hours: int = 0):
-  with sqlite3.connect("bot_users.db", timeout=20) as conn:
+  with sqlite3.connect(DB_PATH, timeout=20) as conn:
     cursor = conn.cursor()
     cursor.execute(
         "SELECT sub_expires_at FROM users WHERE user_id = ?", (user_id,)
@@ -687,7 +698,7 @@ async def check_active_signals_worker(bot: Bot):
   while True:
     await asyncio.sleep(120)
     try:
-      with sqlite3.connect("bot_users.db", timeout=20) as conn:
+      with sqlite3.connect(DB_PATH, timeout=20) as conn:
         cursor = conn.cursor()
         cursor.execute(
             """
@@ -711,7 +722,7 @@ async def check_active_signals_worker(bot: Bot):
         try:
           created_dt = datetime.fromisoformat(created_at)
           if datetime.now(timezone.utc) - created_dt > timedelta(hours=24) and is_triggered == 0:
-            with sqlite3.connect("bot_users.db", timeout=20) as conn:
+            with sqlite3.connect(DB_PATH, timeout=20) as conn:
               cursor = conn.cursor()
               cursor.execute("UPDATE active_signals SET status = 'EXPIRED' WHERE signal_id = ?", (signal_id,))
               conn.commit()
@@ -768,7 +779,7 @@ async def check_active_signals_worker(bot: Bot):
               result_type = "TP"
 
         if new_is_triggered != is_triggered and not result_type:
-          with sqlite3.connect("bot_users.db", timeout=20) as conn:
+          with sqlite3.connect(DB_PATH, timeout=20) as conn:
             cursor = conn.cursor()
             cursor.execute("UPDATE active_signals SET is_triggered = 1 WHERE signal_id = ?", (signal_id,))
             conn.commit()
@@ -787,7 +798,7 @@ async def check_active_signals_worker(bot: Bot):
             direction_emoji = "🟢 LONG" if direction == "LONG" else "🔴 SHORT"
             updated_channel_text = (
                 f"{direction_emoji} • {symbol}\n"
-                f"⚡️ FUTURES - LIMIT\n\n"
+                f"⚡ FUTURES - LIMIT\n\n"
                 f"🤖 ВХОД — ${entry_price}\n"
                 f"🔴 STOP LOSS — ${stop_loss}\n"
                 f"🎯 ЦЕЛЬ 1 — ${tp1_price}\n"
@@ -809,7 +820,7 @@ async def check_active_signals_worker(bot: Bot):
             print(f"Ошибка обновления отработанного сигнала в канале: {e}")
 
           final_db_status = 'CLOSED' if result_type in ['TP', 'SL'] else 'EXPIRED'
-          with sqlite3.connect("bot_users.db", timeout=20) as conn:
+          with sqlite3.connect(DB_PATH, timeout=20) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 "UPDATE active_signals SET status = ? WHERE signal_id = ?",
@@ -847,477 +858,3 @@ def get_main_menu_keyboard(lang="ru"):
           [InlineKeyboardButton(text=get_btn_text("payment", lang), callback_data="payment")],
       ]
   )
-
-
-def get_asset_menu_keyboard(lang="ru"):
-  return InlineKeyboardMarkup(
-      inline_keyboard=[
-          [
-              InlineKeyboardButton(text=get_btn_text("btc", lang), callback_data="asset_btc"),
-              InlineKeyboardButton(text=get_btn_text("eth", lang), callback_data="asset_eth"),
-          ],
-          [InlineKeyboardButton(text=get_btn_text("other_asset", lang), callback_data="find_other_asset")],
-          [InlineKeyboardButton(text=get_btn_text("back_main", lang), callback_data="main_menu")],
-      ]
-  )
-
-
-def get_timeframe_menu_keyboard(asset_code: str, lang="ru"):
-  return InlineKeyboardMarkup(
-      inline_keyboard=[
-          [
-              InlineKeyboardButton(text=get_btn_text("short", lang), callback_data=f"tf_short_{asset_code}"),
-              InlineKeyboardButton(text=get_btn_text("mid", lang), callback_data=f"tf_mid_{asset_code}"),
-          ],
-          [
-              InlineKeyboardButton(text=get_btn_text("back", lang), callback_data="get_signal"),
-              InlineKeyboardButton(text=get_btn_text("back_main", lang), callback_data="main_menu"),
-          ],
-      ]
-  )
-
-
-def get_signal_action_keyboard(tf_type: str, asset_code: str, lang="ru"):
-  return InlineKeyboardMarkup(
-      inline_keyboard=[
-          [
-              InlineKeyboardButton(text=get_btn_text("new_analysis", lang), callback_data="get_signal"),
-              InlineKeyboardButton(text=get_btn_text("back_main", lang), callback_data="main_menu"),
-          ],
-          [InlineKeyboardButton(text=get_btn_text("recalc", lang), callback_data=f"tf_{tf_type}_{asset_code}")],
-      ]
-  )
-
-
-def get_how_it_works_keyboard(lang="ru"):
-  return InlineKeyboardMarkup(
-      inline_keyboard=[[InlineKeyboardButton(text=get_btn_text("back_main", lang), callback_data="main_menu")]]
-  )
-
-
-def get_payment_keyboard(lang="ru"):
-  return InlineKeyboardMarkup(
-      inline_keyboard=[
-          [InlineKeyboardButton(text="⭐ Продлить на день за 50 звёзд", callback_data="buy_daily_1")],
-          [InlineKeyboardButton(text="🌟 Продлить на неделю за 100 звёзд", callback_data="buy_weekly_2")],
-          [InlineKeyboardButton(text=get_btn_text("back_main", lang), callback_data="main_menu")],
-      ]
-  )
-
-
-def get_limit_exceeded_keyboard(bot_username, user_id, lang="ru"):
-  ref_link = f"https://t.me/{bot_username}?start={user_id}"
-  return InlineKeyboardMarkup(
-      inline_keyboard=[
-          [InlineKeyboardButton(text="⭐ Продлить на день за 50 звёзд", callback_data="buy_daily_1")],
-          [InlineKeyboardButton(text="🌟 Продлить на неделю за 100 звёзд", callback_data="buy_weekly_2")],
-          [InlineKeyboardButton(text="👥 Пригласить друга", url=ref_link)],
-          [InlineKeyboardButton(text=get_btn_text("back_main", lang), callback_data="main_menu")],
-      ]
-  )
-
-
-async def get_binance_price(symbol: str) -> float:
-  url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
-  try:
-    async with aiohttp.ClientSession() as session:
-      async with session.get(url, timeout=5) as response:
-        if response.status == 200:
-          data = await response.json()
-          return float(data["price"])
-  except Exception:
-    pass
-  return 0.0
-
-
-# ==================== ХЭНДЛЕРЫ TELEGRAM ====================
-@dp.message(Command("start"))
-async def start_command_handler(message: Message, command: CommandObject, bot: Bot):
-  try:
-    await message.delete()
-  except Exception:
-    pass
-  user = message.from_user
-  user_lang = user.language_code or "ru"
-  bot_info = await bot.get_me()
-
-  referrer_id = None
-  args = command.args
-  if args and args.isdigit() and int(args) != user.id:
-    referrer_id = int(args)
-
-  register_user(user.id, user.username, user.full_name, user_lang, referrer_id)
-  requests_left, daily_used, is_sub_active, _ = get_user_status(user.id)
-  base_caption = get_welcome_text(requests_left, daily_used, is_sub_active, bot_info.username, user.id)
-  caption = await translate_text_for_user(base_caption, user_lang)
-
-  try:
-    await message.answer_photo(
-        photo=LOGO_PHOTO_URL,
-        caption=caption,
-        reply_markup=get_main_menu_keyboard(user_lang),
-        parse_mode=ParseMode.HTML,
-    )
-  except Exception:
-    await message.answer(caption, reply_markup=get_main_menu_keyboard(user_lang), parse_mode=ParseMode.HTML)
-
-
-@dp.callback_query(F.data == "main_menu")
-async def process_main_menu(callback: CallbackQuery, bot: Bot):
-  bot_info = await bot.get_me()
-  user_id = callback.from_user.id
-  user_lang = callback.from_user.language_code
-  requests_left, daily_used, is_sub_active, _ = get_user_status(user_id)
-
-  base_caption = get_welcome_text(requests_left, daily_used, is_sub_active, bot_info.username, user_id)
-  caption = await translate_text_for_user(base_caption, user_lang)
-
-  try:
-    await callback.message.edit_caption(
-        caption=caption,
-        reply_markup=get_main_menu_keyboard(user_lang),
-        parse_mode=ParseMode.HTML,
-    )
-  except Exception:
-    try:
-      await callback.message.delete()
-    except Exception:
-      pass
-    await callback.message.answer_photo(
-        photo=LOGO_PHOTO_URL,
-        caption=caption,
-        reply_markup=get_main_menu_keyboard(user_lang),
-        parse_mode=ParseMode.HTML,
-    )
-  await callback.answer()
-
-
-@dp.callback_query(F.data == "get_signal")
-async def process_signal_callback(callback: CallbackQuery, bot: Bot):
-  user_id = callback.from_user.id
-  user_lang = callback.from_user.language_code
-  requests_left, daily_used, is_sub_active, _ = get_user_status(user_id)
-  bot_info = await bot.get_me()
-
-  if not is_sub_active and (requests_left <= 0 or daily_used >= 6):
-    text = "❌ Исчерпаны бесплатные лимиты запросов. Оформите подписку или пригласите друга."
-    keyboard = get_limit_exceeded_keyboard(bot_info.username, user_id, user_lang)
-    try:
-      await callback.message.edit_caption(caption=text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
-    except Exception:
-      await callback.message.answer(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
-    await callback.answer()
-    return
-
-  base_text = "🔍 <b>АНАЛИЗ АКТИВА</b>\n\n📊 Какой актив хотите проанализировать?"
-  text = await translate_text_for_user(base_text, user_lang)
-
-  try:
-    await callback.message.edit_caption(
-        caption=text,
-        reply_markup=get_asset_menu_keyboard(user_lang),
-        parse_mode=ParseMode.HTML,
-    )
-  except Exception:
-    await callback.message.answer(
-        text,
-        reply_markup=get_asset_menu_keyboard(user_lang),
-        parse_mode=ParseMode.HTML,
-    )
-  await callback.answer()
-
-
-@dp.callback_query(F.data == "find_other_asset")
-async def process_find_other_asset(callback: CallbackQuery, bot: Bot):
-  user_lang = callback.from_user.language_code
-  base_text = (
-      "🔍 <b>ДРУГОЙ АКТИВ</b>\n\nНапишите в чат короткое название нужного актива"
-      " 👇\n\n💡 Например: <code>XRP</code>, <code>SUI</code>, <code>LINK</code>"
-  )
-  text = await translate_text_for_user(base_text, user_lang)
-  keyboard = InlineKeyboardMarkup(
-      inline_keyboard=[
-          [
-              InlineKeyboardButton(text=get_btn_text("back", user_lang), callback_data="get_signal"),
-              InlineKeyboardButton(text=get_btn_text("back_main", user_lang), callback_data="main_menu"),
-          ]
-      ]
-  )
-  try:
-    await callback.message.edit_caption(caption=text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
-  except Exception:
-    await callback.message.answer(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
-  await callback.answer()
-
-
-@dp.callback_query(F.data.in_({"asset_btc", "asset_eth"}))
-async def process_asset_selection(callback: CallbackQuery):
-  user_lang = callback.from_user.language_code
-  asset_name = "BTCUSDT" if callback.data == "asset_btc" else "ETHUSDT"
-  code = "btc" if callback.data == "asset_btc" else "eth"
-
-  base_text = f"📊 <b>{asset_name}</b>\n\nАктив успешно найден ✅\n\nТеперь выберите таймфрейм для анализа 👇"
-  text = await translate_text_for_user(base_text, user_lang)
-
-  try:
-    await callback.message.edit_caption(
-        caption=text,
-        reply_markup=get_timeframe_menu_keyboard(code, user_lang),
-        parse_mode=ParseMode.HTML,
-    )
-  except Exception:
-    await callback.message.edit_text(
-        text,
-        reply_markup=get_timeframe_menu_keyboard(code, user_lang),
-        parse_mode=ParseMode.HTML,
-    )
-  await callback.answer()
-
-
-@dp.message(F.text & ~F.text.startswith("/"))
-async def process_custom_asset_text(message: Message, bot: Bot):
-  try:
-    await message.delete()
-  except Exception:
-    pass
-
-  user_lang = message.from_user.language_code or "ru"
-  clean_ticker = message.text.strip().upper().replace("/", "").replace("USDT", "").replace("$", "")
-  asset_full = f"{clean_ticker}USDT"
-
-  price = await get_binance_price(asset_full)
-  if price == 0.0:
-    await message.answer(f"❌ Актив <b>{asset_full}</b> не найден или недоступен.", parse_mode=ParseMode.HTML)
-    return
-
-  code = f"custom_{clean_ticker}"
-  keyboard = InlineKeyboardMarkup(
-      inline_keyboard=[
-          [
-              InlineKeyboardButton(text=get_btn_text("short", user_lang), callback_data=f"tf_short_{code}"),
-              InlineKeyboardButton(text=get_btn_text("mid", user_lang), callback_data=f"tf_mid_{code}"),
-          ],
-          [InlineKeyboardButton(text=get_btn_text("back_main", user_lang), callback_data="main_menu")],
-      ]
-  )
-  base_text = f"📊 <b>{asset_full}</b> (Цена: <b>${price:,.4f}</b>)\n\nАктив найден ✅\n\nВыберите таймфрейм 👇"
-  text = await translate_text_for_user(base_text, user_lang)
-  await message.answer(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
-
-
-@dp.callback_query(F.data.startswith("tf_"))
-async def process_timeframe_selection(callback: CallbackQuery, bot: Bot):
-  await callback.answer()
-  user_id = callback.from_user.id
-  user_lang = callback.from_user.language_code or "ru"
-  bot_info = await bot.get_me()
-
-  requests_left, daily_used, is_sub_active, _ = get_user_status(user_id)
-  if not is_sub_active and (requests_left <= 0 or daily_used >= 6):
-    text = "⏳ Лимит запросов исчерпан."
-    keyboard = get_limit_exceeded_keyboard(bot_info.username, user_id, user_lang)
-    try:
-      await callback.message.edit_caption(caption=text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
-    except Exception:
-      await callback.message.answer(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
-    return
-
-  parts = callback.data.split("_")
-  tf_type = parts[1]
-  asset_code = "_".join(parts[2:])
-
-  if asset_code == "btc":
-    asset_full = "BTCUSDT"
-  elif asset_code == "eth":
-    asset_full = "ETHUSDT"
-  else:
-    raw_ticker = asset_code.replace("custom_", "").strip().upper()
-    asset_full = raw_ticker if raw_ticker.endswith("USDT") else f"{raw_ticker}USDT"
-
-  existing_signal = get_active_signal(asset_full, tf_type, user_id=user_id)
-  if existing_signal:
-    await callback.message.answer(
-        f"⚠️ У вас уже есть активный сигнал по <b>{asset_full}</b> ({tf_type})! Дождитесь отработки текущего сценария.",
-        parse_mode=ParseMode.HTML,
-    )
-    return
-
-  loading_text = f"⏳ Анализирую мультитаймфреймные индикаторы для <b>{asset_full}</b>..."
-  try:
-    await callback.message.edit_caption(caption=loading_text, parse_mode=ParseMode.HTML, reply_markup=None)
-  except Exception:
-    try:
-      await callback.message.edit_text(text=loading_text, parse_mode=ParseMode.HTML, reply_markup=None)
-    except Exception:
-      pass
-
-  interval_map = {"short": "15m", "mid": "4h"}
-  primary_interval = interval_map.get(tf_type, "15m")
-
-  indicators = await calculate_market_indicators(asset_full, interval=primary_interval)
-  htf_macro_interval = "1d" if tf_type == "mid" else "4h"
-  htf_indicators = await calculate_market_indicators(asset_full, interval=htf_macro_interval)
-
-  if not indicators["success"] or not htf_indicators["success"]:
-    await callback.message.answer("❌ Ошибка получения данных с биржи. Попробуйте еще раз.")
-    return
-
-  market_context_str = (
-      f"\n[MULTI-TIMEFRAME FILTERS DATA]:\n"
-      f"- CURRENT PRICE: ${indicators['price']}\n"
-      f"- Primary TF ({primary_interval}) Trend / EMA Slope: {indicators['trend']}\n"
-      f"- Primary TF RSI(14): {indicators['rsi']}\n"
-      f"- Higher TF ({htf_macro_interval}) Macro Trend: {htf_indicators['trend']}\n"
-  )
-
-  tf_name = "Short-term" if tf_type == "short" else "Mid-term"
-  lang_code_target = user_lang[:2].lower()
-
-  prompt = (
-      f"{SYSTEM_PROMPT}\n\n"
-      f"Analyze crypto futures for {asset_full} using Smart Money Concepts (SMC). Type: {tf_name}.{market_context_str}\n\n"
-      "STRICT TRADING RULES & FILTERS:\n"
-      "1. MARKET PRICE BINDING: Entry zone MUST be within 0.5% - 2% range of the CURRENT PRICE.\n"
-      "2. MULTI-TIMEFRAME ALIGNMENT (CRITICAL): You are STRICTLY FORBIDDEN from generating a LONG signal if the Higher TF macro trend is BEARISH or if the Primary TF EMA slope is falling! Conversely, do NOT suggest SHORT if Higher TF is BULLISH.\n"
-      "3. TREND-FOLLOWING ENFORCEMENT (CRITICAL): If the price is below a falling EMA 200 on the primary timeframe, you MUST ONLY generate a SHORT signal in the direction of the macro trend.\n"
-      "4. RSI FILTER: Respect extreme RSI zones (>75 or <25).\n"
-      "5. SMART MONEY STOP-LOSS (STRICT): Stop-loss MUST be placed strictly behind the structural swing low (for LONG) / swing high (for SHORT) and beyond the Order Block (OB) boundary. Do NOT artificially shorten the stop-loss percentage. It must protect against a market structure break (BOS).\n\n"
-      f"LANGUAGE INSTRUCTION: Write the text descriptions (entry_logic, targets_logic, invalidation_logic) strictly in the language with ISO code '{lang_code_target}'.\n\n"
-      "STRICT RULE: Return ONLY a valid JSON object with the following keys, no extra text or markdown formatting outside the JSON:\n"
-      "{\n"
-      '  "direction": "LONG" or "SHORT",\n'
-      f'  "symbol": "{asset_full}",\n'
-      '  "quality_percent": [число от 0 до 100],\n'
-      '  "entry_price": "[цена]",\n'
-      '  "entry_zone": "[диапазон зоны]",\n'
-      '  "stop_loss": "[цена стопа]",\n'
-      '  "stop_loss_percent": "[процент риска]",\n'
-      '  "tp1_price": "[цена цели 1]",\n'
-      '  "tp1_r": "[R:R для цели 1]",\n'
-      '  "tp1_percent": "[процент фиксации первой цели, например 60]",\n'
-      '  "tp2_price": "[цена цели 2]",\n'
-      '  "tp2_r": "[R:R для цели 2]",\n'
-      '  "tp2_percent": "[процент фиксации второй цели, например 40]",\n'
-      '  "entry_logic": "[обоснование входа через SMC на языке пользователя]",\n'
-      '  "targets_logic": "[обоснование целей на языке пользователя]",\n'
-      '  "invalidation_logic": "[уровень инвалидации или отмены плана на языке пользователя]"\n'
-      "}"
-  )
-
-  try:
-    raw_response = await generate_with_retry(prompt)
-    clean_json_str = extract_json_from_text(raw_response)
-    ai_response_data = json.loads(clean_json_str)
-    response_text = format_signal_message(ai_response_data)
-
-    try:
-      save_active_signal(
-          symbol=asset_full,
-          tf_type=tf_type,
-          direction=ai_response_data.get("direction"),
-          entry_price=float(ai_response_data.get("entry_price", 0)),
-          stop_loss=float(ai_response_data.get("stop_loss", 0)),
-          tp1_price=float(ai_response_data.get("tp1_price", 0)),
-          tp2_price=float(ai_response_data.get("tp2_price", 0)),
-          channel_message_id=None,
-          user_id=user_id,
-      )
-    except Exception as db_err:
-      print(f"Ошибка сохранения сигнала в БД: {db_err}")
-
-    if not is_sub_active:
-      use_request_and_check_referral(user_id, bot)
-
-    try:
-      await callback.message.delete()
-    except Exception:
-      pass
-
-    await callback.message.answer(
-        text=f"✅ Сигнал успешно создан и отправлен на мониторинг!\n\n{response_text}",
-        reply_markup=get_signal_action_keyboard(tf_type, asset_code, user_lang),
-        parse_mode=ParseMode.HTML,
-    )
-  except Exception as e:
-    print(f"Ошибка генерации или обработки JSON: {e}")
-    await callback.message.answer(
-        "❌ Ошибка генерации. Нажмите «🔄 Перерахувати»:",
-        reply_markup=get_signal_action_keyboard(tf_type, asset_code, user_lang),
-    )
-
-
-@dp.callback_query(F.data == "how_it_works")
-async def process_how_it_works(callback: CallbackQuery):
-  user_lang = callback.from_user.language_code
-  text = "❓ <b>КАК ЭТО РАБОТАЕТ?</b>\n\nБот использует мультитаймфреймный анализ и фильтры старших трендов (4h/1d + 15m/4h) для поиска точных точек входа по Smart Money."
-  try:
-    await callback.message.edit_caption(caption=text, reply_markup=get_how_it_works_keyboard(user_lang), parse_mode=ParseMode.HTML)
-  except Exception:
-    await callback.message.edit_text(text, reply_markup=get_how_it_works_keyboard(user_lang), parse_mode=ParseMode.HTML)
-  await callback.answer()
-
-
-@dp.callback_query(F.data == "payment")
-async def process_payment(callback: CallbackQuery):
-  user_lang = callback.from_user.language_code
-  text = "💳 <b>ОПЛАТА ТАРИФОВ</b>\n\nВыберите вариант подписки:"
-  try:
-    await callback.message.edit_caption(caption=text, reply_markup=get_payment_keyboard(user_lang), parse_mode=ParseMode.HTML)
-  except Exception:
-    await callback.message.edit_text(text, reply_markup=get_payment_keyboard(user_lang), parse_mode=ParseMode.HTML)
-  await callback.answer()
-
-
-@dp.callback_query(F.data.in_({"buy_daily_1", "buy_weekly_2"}))
-async def process_buy_tariff(callback: CallbackQuery):
-  is_daily = callback.data == "buy_daily_1"
-  title = "Безлимит на 1 день" if is_daily else "Безлимит на 7 дней"
-  amount = 50 if is_daily else 100
-  prices = [LabeledPrice(label=title, amount=amount)]
-  await bot.send_invoice(
-      chat_id=callback.from_user.id,
-      title=title,
-      description="Доступ к неограниченным запросам",
-      payload="custom_payload",
-      provider_token=PROVIDER_TOKEN,
-      currency="XTR",
-      prices=prices,
-  )
-  await callback.answer()
-
-
-@dp.pre_checkout_query()
-async def pre_checkout_query_handler(pre_checkout_query: PreCheckoutQuery):
-  await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
-
-
-@dp.message(F.successful_payment)
-async def successful_payment_handler(message: Message):
-  total_amount = message.successful_payment.total_amount
-  user_id = message.from_user.id
-  if total_amount == 50:
-    activate_subscription(user_id, days=0, hours=24)
-    plan_name = "24 часа"
-  else:
-    activate_subscription(user_id, days=7, hours=0)
-    plan_name = "7 дней"
-  await message.answer(f"🎉 Оплата успешна! Активирован безлимит на: <b>{plan_name}</b> ✅", parse_mode=ParseMode.HTML)
-
-
-# ==================== ЗАПУСК БОТА ====================
-async def main():
-  init_db()
-  await bot.delete_webhook(drop_pending_updates=True)
-  
-  asyncio.create_task(check_active_signals_worker(bot))
-  asyncio.create_task(auto_scanner_worker(bot))
-  
-  print("Бот успешно запущен, авто-сканер рынка (каждый 1 час) и мониторинг активны...")
-  await dp.start_polling(bot)
-
-
-if __name__ == "__main__":
-  try:
-    asyncio.run(main())
-  except (KeyboardInterrupt, SystemExit):
-    print("Бот остановлен.")
